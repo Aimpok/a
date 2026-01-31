@@ -1,48 +1,60 @@
-// api/moderate.js
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export default async function handler(req, res) {
-    if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
+    // Настройка CORS, чтобы GitHub Pages мог делать запросы
+    res.setHeader('Access-Control-Allow-Credentials', true);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+    res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
 
-    const { name, ticker, description, image } = req.body;
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
 
-    const prompt = `
-    Ты — модератор контента для крипто-платформы. 
-    Проверь следующие данные токена на: порнографию, мат, призывы к насилию, скам или оскорбления.
-    Название: ${name}
-    Тикер: ${ticker}
-    Описание: ${description}
-    
-    Также тебе передано изображение. Если оно содержит неприемлемый контент, ответь "REJECTED".
-    Если всё в порядке, ответь "APPROVED". Если есть нарушения, ответь "REJECTED" и краткую причину на английском.
-    Отвечай строго в формате JSON: {"status": "APPROVED" или "REJECTED", "reason": "текст причины если REJECTED"}
-    `;
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
 
     try {
-        let parts = [{ text: prompt }];
+        const { name, ticker, description, image } = req.body;
         
-        // Если есть картинка, добавляем её в запрос для анализа
-        if (image) {
-            const imageData = image.split(',')[1];
+        if (!process.env.GEMINI_API_KEY) {
+            return res.status(500).json({ status: "ERROR", reason: "API Key missing on server" });
+        }
+
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+        const prompt = `Ты модератор. Проверь данные крипто-токена на: порнографию, мат, скам, оскорбления или политические провокации.
+        Название: ${name}
+        Тикер: ${ticker}
+        Описание: ${description}
+        Если всё хорошо, ответь строго JSON: {"status": "APPROVED"}
+        Если есть нарушения, ответь строго JSON: {"status": "REJECTED", "reason": "краткая причина на английском"}`;
+
+        let parts = [{ text: prompt }];
+
+        // Если прислали картинку, добавляем её в запрос
+        if (image && image.includes('base64,')) {
+            const base64Data = image.split('base64,')[1];
             parts.push({
                 inlineData: {
                     mimeType: "image/jpeg",
-                    data: imageData
+                    data: base64Data
                 }
             });
         }
 
         const result = await model.generateContent(parts);
         const response = await result.response;
-        const text = response.text();
+        let text = response.text();
         
-        // Очищаем текст от возможных markdown-кавычек ```json ... ```
-        const cleanJson = text.replace(/```json/g, "").replace(/```/g, "").trim();
-        res.status(200).json(JSON.parse(cleanJson));
+        // Очистка ответа от возможных markdown кавычек
+        text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+        
+        res.status(200).json(JSON.parse(text));
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ status: "ERROR", reason: "AI Moderation failed" });
+        console.error("AI Error:", error);
+        res.status(500).json({ status: "ERROR", reason: "Moderation failed" });
     }
 }

@@ -4,6 +4,7 @@ const groq = new Groq({
     apiKey: process.env.GROQ_API_KEY
 });
 
+// CORS настройки
 const allowCors = fn => async (req, res) => {
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -64,19 +65,27 @@ const handler = async (req, res) => {
                     ]
                 },
             ],
-            // ИЗМЕНЕНИЕ ЗДЕСЬ: Используем актуальную модель 90b
-            model: "llama-3.2-90b-vision-preview",
+            // === ИСПОЛЬЗУЕМ ВАШУ МОДЕЛЬ SCOUT ===
+            model: "meta-llama/llama-4-scout-17b-16e-instruct",
+            
             temperature: 0,
+            // Важно: некоторые превью-модели могут не поддерживать response_format: json_object идеально,
+            // но мы обрабатываем это ниже очисткой строки.
             response_format: { type: "json_object" }
         });
 
         const content = completion.choices[0].message.content;
-        const result = JSON.parse(content);
+        
+        // Очистка от возможных markdown-тегов (```json ... ```), если модель их добавит
+        const cleanContent = content.replace(/```json\n?|```/g, '').trim();
+        
+        const result = JSON.parse(cleanContent);
         
         return res.status(200).json(result);
 
     } catch (error) {
         console.error("AI Check Error:", error);
+        // Возвращаем детали ошибки, чтобы видеть их в логах теста
         return res.status(500).json({ 
             error: "Moderation failed", 
             details: error.message 

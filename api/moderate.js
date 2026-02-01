@@ -1,30 +1,37 @@
-import Groq from "groq-sdk";
+import Groq from 'groq-sdk';
 
-export default async function handler(req, res) {
-    // 1. CORS - Разрешаем доступ с твоего сайта
+// Инициализация клиента Groq
+const groq = new Groq({
+    apiKey: process.env.GROQ_API_KEY
+});
+
+// Разрешаем CORS, чтобы ваш фронтенд мог обращаться к этому API
+const allowCors = fn => async (req, res) => {
     res.setHeader('Access-Control-Allow-Credentials', true);
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Origin', '*'); // В продакшене лучше указать конкретный домен
     res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
     res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
-
-    // Обработка предварительного запроса браузера
-    if (req.method === 'OPTIONS') return res.status(200).end();
     
-    // Разрешаем только POST
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    if (req.method === 'OPTIONS') {
+        res.status(200).end();
+        return;
+    }
+    return await fn(req, res);
+}
+
+const handler = async (req, res) => {
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
 
     try {
         const { name, ticker, description, image } = req.body;
-        
-        // Проверяем ключ
-        if (!process.env.GROQ_API_KEY) {
-            console.error("No API Key found");
-            return res.status(500).json({ status: "ERROR", reason: "Server config error: API Key missing" });
+
+        if (!image) {
+            return res.status(400).json({ error: 'Image is required' });
         }
 
-        const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-        // Отправляем запрос в Groq
+        // Подготовка промпта для Llama Vision
         const completion = await groq.chat.completions.create({
             messages: [
                 {
@@ -32,49 +39,47 @@ export default async function handler(req, res) {
                     content: [
                         {
                             type: "text",
-                            text: `You are a crypto moderator.
-                            Task: Check this token for NSFW (porn), Scam, or Racism.
+                            text: `You are a strict content moderator for a crypto launchpad. 
+                            Analyze the provided token image and details.
                             
-                            Token Info:
-                            Name: ${name}
-                            Ticker: ${ticker}
-                            Desc: ${description}
+                            Token Name: "${name}"
+                            Ticker: "${ticker}"
+                            Description: "${description}"
                             
-                            Respond with VALID JSON ONLY. Do not use Markdown blocks.
-                            Format 1 (Good): {"status": "APPROVED"}
-                            Format 2 (Bad): {"status": "REJECTED", "reason": "short reason in English"}
-                            `
+                            CHECK FOR:
+                            1. NSFW/Pornography/Nudity.
+                            2. Hate speech, racism, or extremism.
+                            3. Illegal drugs or weapons promotion.
+                            4. Scams or impersonation of famous coins/people in a malicious way.
+                            
+                            Return ONLY a JSON object with this format (no markdown):
+                            {
+                                "allowed": boolean,
+                                "reason": "string (explanation if allowed is false, otherwise empty)"
+                            }`
                         },
                         {
                             type: "image_url",
-                            image_url: { url: image } // Groq принимает base64 напрямую
+                            image_url: {
+                                url: image // Ожидается base64 формат: "data:image/jpeg;base64,..."
+                            }
                         }
                     ]
                 }
             ],
             model: "llama-3.2-11b-vision-preview",
             temperature: 0,
-            max_tokens: 100,
-            top_p: 1,
-            stream: false,
             response_format: { type: "json_object" }
         });
 
-        // Получаем ответ и чистим его
-        let resultText = completion.choices[0]?.message?.content || "{}";
+        const result = JSON.parse(completion.choices[0].message.content);
         
-        // Иногда ИИ добавляет ```json ... ```, убираем это
-        resultText = resultText.replace(/```json/g, "").replace(/```/g, "").trim();
-        
-        const jsonResult = JSON.parse(resultText);
-        
-        console.log("AI Response:", jsonResult); // Для логов Vercel
-        
-        res.status(200).json(jsonResult);
+        return res.status(200).json(result);
 
     } catch (error) {
-        console.error("Groq Error:", error);
-        // Возвращаем текст ошибки клиенту, чтобы ты видел, что случилось
-        res.status(500).json({ status: "ERROR", reason: error.message });
+        console.error("AI Check Error:", error);
+        return res.status(500).json({ error: "Moderation check failed", details: error.message });
     }
-}
+};
+
+export default allowCors(handler);
